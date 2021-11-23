@@ -10,8 +10,8 @@ class Conf(object):
     CERT_NAME = 'server'
 
     # host/port to listen for client connections
-    LISTEN_HOST = '0.0.0.0'
-    LISTEN_PORT = 28115
+    CLIENT_HOST = '0.0.0.0'
+    CLIENT_PORT = 28115
 
     # host/port for main server process IPC
     MANAGER_HOST = '127.0.0.1'
@@ -47,8 +47,8 @@ class Conf(object):
     LOG_DIR_PATH = os.path.join(SERVER_DIR_PATH, 'logs')
     DOWNLOADS_DIR_PATH = os.path.join(SERVER_DIR_PATH, 'downloads')
 
-    LOG_FILE_PATH = os.path.join(SERVER_DIR_PATH, 'server.log')
-    LOG_FILE_PATH_HTTP = os.path.join(SERVER_DIR_PATH, 'access.log')
+    LOG_PATH_SERVER = os.path.join(SERVER_DIR_PATH, 'server.log')
+    LOG_PATH_ACCESS = os.path.join(SERVER_DIR_PATH, 'access.log')
 
     PGID_FILE_PATH = os.path.join(SERVER_DIR_PATH, 'server.pgid')
 
