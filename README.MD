@@ -1,3 +1,6 @@
+Such Wow, Much Amaze. Very fun!
+
+(Use with care, Cr4sh and nano11bravo are not in any way responsible for who comes knocking on your door if you utilize this tool.)
 
 # Micro Backdoor for Windows
 
